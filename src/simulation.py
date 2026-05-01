@@ -1,90 +1,139 @@
+import simpy
 import random
-from order import Order
-from agent import Agent
+
+from graph import WarehouseLayout
 from inventory import InventoryBin
 from packing import PackingStation
-from metrics import Metrics
-from graph import WarehouseGraph
+from metrics import MetricsCollector
+from order import Order
 
 
-class Simulation:
-    def __init__(self, arrival_rate, service_min=1, service_max=3):
+class Dispatcher:
+    """Encapsulates worker assignment policy for the simulation."""
+
+    def __init__(self, worker_pool):
+        self._pool = worker_pool
+
+    def request_worker(self):
+        return self._pool.request()
+
+    def release_worker(self, req):
+        self._pool.release(req)
+
+    @property
+    def queue_length(self):
+        return len(self._pool.queue)
+
+    @property
+    def active_count(self):
+        return self._pool.count
+
+
+class WarehouseSimulation:
+    """Top-level controller.  Maintains the SimPy environment, event queue,
+    agent pool, packing station, warehouse layout, and metrics collector."""
+
+    PICK_LOCATIONS = ["Aisle_A", "Aisle_B", "Aisle_C"]
+
+    def __init__(self, arrival_rate, num_orders, service_min, service_max, num_workers=1):
         self.arrival_rate = arrival_rate
+        self.num_orders = num_orders
         self.service_min = service_min
         self.service_max = service_max
+        self.num_workers = num_workers
 
-        self.current_time = 0
-        self.worker_free_time = 0
+        self.env = simpy.Environment()
 
-        self.agent = Agent(1)
-        self.inventory = InventoryBin(stock=20, reorder_point=5, reorder_qty=10)
+        # SimPy resources
+        self._worker_resource = simpy.Resource(self.env, capacity=num_workers)
+        self._packing_resource = simpy.Resource(self.env, capacity=1)
+
+        self.layout = WarehouseLayout()
+        self.dispatcher = Dispatcher(self._worker_resource)
+
+        # One InventoryBin per pick location with (s, Q) policy
+        self.inventory = {
+            loc: InventoryBin(f"SKU-{loc[-1]}", loc, stock=50, reorder_point=5, reorder_qty=20)
+            for loc in self.PICK_LOCATIONS
+        }
+
         self.packing = PackingStation()
-        self.metrics = Metrics()
+        self.metrics = MetricsCollector()
 
-        self.graph = self.build_warehouse_graph()
-        
+    # ------------------------------------------------------------------
+    # SimPy processes
+    # ------------------------------------------------------------------
 
-    def build_warehouse_graph(self):
-        graph = WarehouseGraph()
-        graph.add_edge("Dock", "Aisle_A", 2)
-        graph.add_edge("Dock", "Aisle_B", 4)
-        graph.add_edge("Aisle_A", "Aisle_C", 3)
-        graph.add_edge("Aisle_B", "Aisle_C", 1)
-        graph.add_edge("Aisle_C", "Packing", 2)
-        graph.add_edge("Aisle_A", "Packing", 5)
-        return graph
+    def _order_generator(self):
+        for order_id in range(1, self.num_orders + 1):
+            interarrival = random.expovariate(self.arrival_rate)
+            yield self.env.timeout(interarrival)
 
-    def generate_interarrival(self):
-        return random.expovariate(self.arrival_rate)
+            pick_loc = random.choice(self.PICK_LOCATIONS)
+            order = Order(order_id, self.env.now, pick_loc)
+            self.metrics.record_queue_length(self.env.now, self.dispatcher.queue_length)
+            self.env.process(self._process_order(order))
 
-    def generate_service_time(self):
-        return random.uniform(self.service_min, self.service_max)
+    def _restock_process(self, location):
+        lead_time = self.inventory[location].restock_lead_time()
+        yield self.env.timeout(lead_time)
+        self.inventory[location].restock()
 
-    def generate_pickup_location(self):
-        return random.choice(["Aisle_A", "Aisle_B", "Aisle_C"])
+    def _process_order(self, order):
+        arrival = order.arrival_time
 
-    def run(self, num_orders):
-        print(f"\nArrival Rate (λ): {self.arrival_rate}")
-        print(f"Simulating {num_orders} orders...\n")
+        # --- Phase 1: acquire a worker ---
+        worker_req = self.dispatcher.request_worker()
+        yield worker_req
 
-        for order_id in range(1, num_orders + 1):
-            interarrival = self.generate_interarrival()
-            self.current_time += interarrival
+        # Congestion factor: travel time inflated proportionally to queue depth.
+        # Coefficient kept small so it models realistic aisle slowdowns, not
+        # exponential blowup.
+        congestion = 1.0 + 0.01 * self.dispatcher.queue_length
 
-            pickup_location = self.generate_pickup_location()
-            order = Order(order_id, self.current_time, pickup_location)
+        # --- Phase 2: travel Dock → pick location (step-by-step via Dijkstra) ---
+        path_to_pick = self.layout.shortest_path("Dock", order.pickup_location)
+        for i in range(len(path_to_pick) - 1):
+            weight = self.layout.edge_weight(path_to_pick[i], path_to_pick[i + 1])
+            yield self.env.timeout(weight * congestion)
 
-            start_service = max(self.current_time, self.worker_free_time)
-            waiting_time = start_service - self.current_time
+        # --- Phase 3: pick item and trigger restock if needed ---
+        bin_ = self.inventory[order.pickup_location]
+        bin_.remove(1)
+        if bin_.needs_restock():
+            self.env.process(self._restock_process(order.pickup_location))
+        order.update_status("Picking")
 
-            self.agent.pick_order(order)
+        # --- Phase 4: travel pick location → packing station (step-by-step) ---
+        path_to_pack = self.layout.shortest_path(order.pickup_location, "Packing")
+        for i in range(len(path_to_pack) - 1):
+            weight = self.layout.edge_weight(path_to_pack[i], path_to_pack[i + 1])
+            yield self.env.timeout(weight * congestion)
 
-            travel_to_pick, pick_path = self.agent.travel_to(order.pickup_location, self.graph)
-            self.inventory.remove_stock(1)
+        order.update_status("Ready for Packing")
+        self.dispatcher.release_worker(worker_req)  # worker free after delivery
 
-            service_time = self.generate_service_time()
+        # --- Phase 5: wait for packing station, then pack ---
+        pack_req = self._packing_resource.request()
+        yield pack_req
 
-            self.agent.deliver_to_packing(order)
-            travel_to_pack, pack_path = self.agent.travel_to(order.packing_location, self.graph)
+        packing_start = self.env.now
+        service_time = random.uniform(self.service_min, self.service_max)
+        yield self.env.timeout(service_time)
 
-            self.packing.add_to_queue(order)
-            shipped_order = self.packing.process_next()
+        self._packing_resource.release(pack_req)
+        finish_time = self.env.now
+        order.update_status("Shipped")
 
-            total_service_time = service_time + travel_to_pick + travel_to_pack
-            finish_time = start_service + total_service_time
-            self.worker_free_time = finish_time
+        # waiting_time = time from arrival until packing begins
+        # (includes queue wait + travel + pick + packing-queue wait)
+        self.metrics.record_order(arrival, packing_start, service_time, finish_time)
 
-            self.metrics.record_order(waiting_time, total_service_time, finish_time)
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
-            print(f"Order {order_id}")
-            print(f"  Arrival Time: {self.current_time:.2f}")
-            print(f"  Pickup Location: {pickup_location}")
-            print(f"  Start Time: {start_service:.2f}")
-            print(f"  Travel to Pick: {travel_to_pick:.2f}")
-            print(f"  Travel to Pack: {travel_to_pack:.2f}")
-            print(f"  Processing Time: {service_time:.2f}")
-            print(f"  Finish Time: {finish_time:.2f}")
-            print(f"  Waiting Time: {waiting_time:.2f}")
-            print("-" * 40)
-
-        self.metrics.summary()
+    def run(self):
+        self.env.process(self._order_generator())
+        self.env.run()
+        return self.metrics.get_summary()

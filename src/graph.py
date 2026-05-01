@@ -1,38 +1,31 @@
+import networkx as nx
 
-import heapq
 
-
-class WarehouseGraph:
+class WarehouseLayout:
     def __init__(self):
-        self.graph = {}
+        self.G = nx.Graph()
+        edges = [
+            ("Dock", "Aisle_A", 2),
+            ("Dock", "Aisle_B", 4),
+            ("Aisle_A", "Aisle_C", 3),
+            ("Aisle_B", "Aisle_C", 1),
+            ("Aisle_C", "Packing", 2),
+            ("Aisle_A", "Packing", 5),
+        ]
+        for u, v, w in edges:
+            self.G.add_edge(u, v, travel_time=w)
 
-    def add_edge(self, node1, node2, weight):
-        if node1 not in self.graph:
-            self.graph[node1] = []
-        if node2 not in self.graph:
-            self.graph[node2] = []
+        if not nx.is_connected(self.G):
+            raise ValueError("Warehouse graph is not connected — check edge definitions")
 
-        self.graph[node1].append((node2, weight))
-        self.graph[node2].append((node1, weight))
+    def shortest_path(self, source, target):
+        return nx.shortest_path(self.G, source, target, weight="travel_time")
 
-    def dijkstra(self, start, end):
-        pq = [(0, start, [])]
-        visited = set()
+    def path_length(self, source, target):
+        return nx.shortest_path_length(self.G, source, target, weight="travel_time")
 
-        while pq:
-            cost, node, path = heapq.heappop(pq)
+    def edge_weight(self, u, v):
+        return self.G[u][v]["travel_time"]
 
-            if node in visited:
-                continue
-
-            visited.add(node)
-            path = path + [node]
-
-            if node == end:
-                return cost, path
-
-            for neighbor, weight in self.graph.get(node, []):
-                if neighbor not in visited:
-                    heapq.heappush(pq, (cost + weight, neighbor, path))
-
-        return float("inf"), []
+    def nodes(self):
+        return list(self.G.nodes())

@@ -1,11 +1,14 @@
-run_id,purpose,arrival_rate,num_orders,service_min,service_max,total_orders,avg_waiting_time,avg_service_time,total_completion_time,duration_seconds,status
-001,Baseline,0.5,10,1,3,10,33.42,8.66,87.32,0.0,Complete
-002,Higher Arrival Rate,1.0,10,1,3,10,30.48,7.56,75.73,0.0,Complete
-003,High Arrival Rate,1.5,10,1,3,10,38.7,8.05,83.28,0.0,Complete
-004,More Orders,0.5,15,1,3,15,50.33,8.7,134.07,0.001,Complete
-005,Balanced Load,1.0,15,1,3,15,51.57,8.67,131.21,0.001,Complete
-006,Heavy Load,1.5,15,1,3,15,55.32,8.3,124.71,0.001,Complete
-007,Faster Service,0.5,20,1,2,20,63.07,8.15,163.08,0.001,Complete
-008,Medium Load Fast Service,1.0,20,1,2,20,62.1,7.94,158.96,0.001,Complete
-009,Slower Service,1.5,20,2,4,20,83.95,9.22,186.19,0.001,Complete
-010,Stress Test,2.0,25,2,4,25,106.49,9.01,225.97,0.01,Complete
+run_id,purpose,arrival_rate,num_orders,service_min,service_max,num_workers,avg_waiting_time,avg_service_time,avg_completion_time,throughput,status
+001,Baseline,0.5,50,1,3,1,162.46,2.09,164.55,0.12,Complete
+002,Higher AR,1.0,50,1,3,1,200.29,2.01,202.31,0.117,Complete
+003,High AR,1.5,50,1,3,1,218.96,1.97,220.93,0.116,Complete
+004,More Orders,0.5,100,1,3,1,413.06,1.91,414.97,0.103,Complete
+005,Balanced,1.0,100,1,3,1,481.66,1.98,483.64,0.1,Complete
+006,Heavy Load,1.5,100,1,3,1,531.14,1.9,533.04,0.098,Complete
+007,Fast Svc,0.5,100,0,1,1,407.07,0.49,407.56,0.104,Complete
+008,Med Fast Svc,1.0,100,0,1,1,491.8,0.51,492.31,0.1,Complete
+009,Slow Svc,1.5,100,2,4,1,508.21,2.96,511.17,0.099,Complete
+010,Stress Test,2.0,150,2,4,1,974.83,2.96,977.78,0.084,Complete
+011,2-Worker Baseline,0.5,100,1,3,2,121.31,2.0,123.32,0.229,Complete
+012,2-Worker Heavy,1.5,100,1,3,2,233.45,1.99,235.45,0.201,Complete
+013,3-Worker,0.5,100,1,3,3,57.78,2.03,59.81,0.351,Complete

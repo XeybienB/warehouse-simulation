@@ -5,6 +5,7 @@ class Order:
         self.pickup_location = pickup_location
         self.packing_location = packing_location
         self.status = "Queued"
+        self.service_start_time = None
 
     def update_status(self, new_status):
         self.status = new_status
